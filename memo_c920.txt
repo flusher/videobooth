@@ -1,0 +1,81 @@
+# http://activearchives.org/wiki/Gstreamer
+# Source : http://www.oz9aec.net/index.php/gstreamer/473-using-the-logitech-c920-webcam-with-gstreamer
+
+# Set display and framerate
+v4l2-ctl --set-fmt-video=width=1920,height=1080,pixelformat=1
+v4l2-ctl --set-fmt-video=width=960,height=760,pixelformat=1
+v4l2-ctl --set-parm=30
+
+# Configuration du bitrate en variable à 4 Mbps
+./config -d /dev/video0 -r VBR -b 4096
+
+# Envoyer le plus en continu dans un fifo
+mkfifo /tmp/capture
+while true ; do capture -f -b 5000 -o | cat - >>/tmp/capture ; done
+# puis modifier location=/dev/fd/0 par location=/tmp/capture
+
+# Capture vers file MKV
+capture -o | gst-launch -v -e filesrc location=/dev/fd/0 ! h264parse ! matroskamux ! filesink location=test.mkv
+
+# Capture packets to screen
+capture -o | gst-launch -v -e filesrc location=/dev/fd/0 ! h264parse ! decodebin2 ! xvimagesink sync=false force-aspect-ratio=true
+
+# Combo ! MKV + screen
+capture -o | gst-launch -v -e filesrc location=/dev/fd/0 ! h264parse \
+! tee name="display" ! queue ! matroskamux ! filesink location=test.mkv display. \
+! queue ! decodebin2 ! xvimagesink sync=false force-aspect-ratio=true
+
+# Combo + Audio > MKV
+capture -o | gst-launch -v -e filesrc location=/dev/fd/0 ! h264parse ! tee name=vid ! decodebin2 ! xvimagesink sync=false force-aspect-ratio=true vid. ! queue ! mux. alsasrc ! audio/x-raw-int,signed=true,rate=44100,channels=2 ! audioconvert ! lamemp3enc target=1 bitrate=128 cbr=true ! queue ! matroskamux name=mux ! filesink location=output.mkv
+
+# avec flip horizontal
+capture -o | gst-launch -v -e filesrc location=/dev/fd/0 ! h264parse ! tee name=vid ! decodebin2 ! queue ! ffmpegcolorspace ! videoflip method=horizontal-flip ! xvimagesink sync=false force-aspect-ratio=true vid. ! queue ! mux. alsasrc ! audio/x-raw-int,signed=true,rate=44100,channels=2 ! audioconvert ! lamemp3enc target=1 bitrate=128 cbr=true ! queue ! matroskamux name=mux ! filesink location=output.mkv
+
+# idem avec spécification du device alsasrc
+capture -o | gst-launch -v -e filesrc location=/dev/fd/0 ! h264parse ! tee name=vid ! decodebin2 ! queue ! ffmpegcolorspace ! videoflip method=horizontal-flip ! xvimagesink sync=false force-aspect-ratio=true vid. ! queue ! mux. alsasrc do-timestamp=true device="plughw:1,0" ! audio/x-raw-int,signed=true,rate=44100,channels=2 ! audioconvert ! lamemp3enc target=1 bitrate=128 cbr=true ! queue ! matroskamux name=mux ! filesink location=output.mkv
+
+#############
+
+# Serveur RTP
+gst-launch -v udpsrc port=4000 caps='application/x-rtp, media=(string)video, clock-rate=(int)90000, encoding-name=(string)H264' ! rtph264depay ! ffdec_h264 ! xvimagesink sync=false
+
+# Envoi du stream vers le serveur RTP
+capture -o | gst-launch -v -e filesrc location=/dev/fd/0 ! h264parse ! mp4mux ! filesink location=test.mp4
+
+#############
+
+### PULSE / ALSA
+
+# Récupérer la liste des cartes sons
+pactl list | grep -A2 'Source #' | grep 'Nom'
+
+# Nom carte son C920
+alsa_input.usb-046d_HD_Pro_Webcam_C920_D4CFBCCF-02-C920.analog-stereo
+
+# Gstreamer encodage mp3
+  gst-launch -e pulsesrc device="alsa_input.usb-046d_HD_Pro_Webcam_C920_D4CFBCCF-02-C920.analog-stereo" ! audioconvert ! \
+    lamemp3enc target=1 bitrate=128 cbr=true ! filesink location=audio.mp3
+
+#############
+
+### VLC / CVLC
+
+cvlc -v v4l2:///dev/video0:chroma="H264":width=960:height=720:fps=30        --sout="#rtp{sdp=rtsp://:8554/live}"
+
+# Stream HTTP
+cvlc v4l2:///dev/video0:chroma=h264:width=960:height:720:fps=30 --sout '#standard{access=http,mux=ts,dst=localhost:8080,name=stream,mime=video/ts}' -vvv
+
+# Stream serveur RTSP
+cvlc v4l2:///dev/video0:chroma=h264:width=960:height:720:fps=30 --sout '#rtp{sdp=rtsp://:8554/live}' --live-caching 10
+
+# Client fullscreen
+cvlc --fullscreen --aspect-ratio 16:9 --live-caching 10 rtsp://localhost:8554/live
+
+# http://blog.parahard.com/2011/11/how-record-your-webcam-with-vlc-to-file.html
+vlc v4l2:///dev/video0 --v4l2-chroma=H264  --v4l2-aspect-ratio=16:9 --input-slave=alsa://plughw:1,0 --v4l2-width=960 --v4l2-height=720 --v4l2-fps=30 --sout="#transcode{vcodec=mp4v,vb=5000,scale=1,fps=30,acodec=mpga,ab=128,channels=1,samplerate=44100}:duplicate{dst=std{access=file,mux=ts,dst=/tmp/video-output.mpg},dst=display}"
+
+http://unix.stackexchange.com/questions/58526/trouble-getting-vlc-to-record-from-the-webcam-via-command-line
+
+./capture -o | gst-launch -v -e filesrc location=/dev/fd/0 ! h264parse ! tee name=vid ! decodebin2 ! fpsdisplaysink fps-update-interval=5000 vid. ! queue ! mux. pulsesrc device="alsa_input.usb-046d_HD_Pro_Webcam_C920_DDAE38EF-02-C920.analog-stereo" ! audioconvert ! lamemp3enc target=1 bitrate=64 cbr=true  ! queue ! mux. avimux name=mux ! filesink location=output.mp4
+
+capture -o | gst-launch -v -e filesrc location=/dev/fd/0 ! h264parse ! tee name=vid ! decodebin2 ! queue ! videoflip method=horizontal-flip ! xvimagesink sync=false force-aspect-ratio=true vid. ! queue ! mux. pulsesrc device=alsa_input.usb-046d_HD_Pro_Webcam_C920_D4CFBCCF-02-C920.analog-stereo ! audioconvert ! lamemp3enc target=1 bitrate=128 cbr=true ! queue ! mux. avimux name=mux ! filesink location=output_audiovideo.mp4

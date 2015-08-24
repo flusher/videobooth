@@ -1,0 +1,5 @@
+c920_init.sh : initialize the webcam (Logitech C920 only, may works with C910/C930)
+c920_videobooth.sh : launch the videobooth (mirror effect + audio/video recording)
+
+Experimental work for my wedding, use at your own risk :)
+
